@@ -1,0 +1,81 @@
+
+==============================================================================
+A. PATIENT ID AS THE ONLY PREDICTOR (acquisition-order / batch check)
+==============================================================================
+AUC of patient_id alone (rank-based, 0.5 = no relation): 0.660
+  Healthy: n=19  min=42  median=137  max=1000
+  Sick: n=37  min=138  median=256  max=1050
+Sorted patient_id with class (H=healthy, S=sick), to look for runs/blocks:
+  42H 49H 50H 51H 55H 64H 66H 68H 108H 137H 138S 166H 179S 180S 181S 192S 198S 202S 204S 209S 210S 213S 220H 226H 240S 241S 245S 249S 250S 251S 255S 256S 257S 259S 261S 263S 264S 270S 280S 282S 283S 286S 400S 450S 500S 550S 600S 650S 700S 750H 800H 850H 900H 950H 1000H 1050S
+A strong departure from 0.5, or long single-class runs, suggests healthy and sick
+patients were recruited/imaged in different periods (a possible batch effect).
+
+==============================================================================
+B. dir / esq SUFFIX
+==============================================================================
+label    0   1
+suffix        
+dir     19  19
+esq      0  18
+(Names are Portuguese for right/left, but whether they match image orientation or
+ anatomical side is UNVERIFIED. What matters here is that the suffix is not independent
+ of the class: no Healthy patient has esq.)
+Out-of-fold results by class and suffix (score = P(Sick)):
+              n  errors  mean_score  min_score  max_score
+group                                                    
+Healthy-dir  19       1       0.080      0.000      0.961
+Sick-dir     19       4       0.814      0.150      1.000
+Sick-esq     18       1       0.956      0.357      1.000
+Misclassified patients: [[179, 'Sick-dir', 0.15], [255, 'Sick-dir', 0.164], [108, 'Healthy-dir', 0.961], [180, 'Sick-esq', 0.357], [249, 'Sick-dir', 0.247], [213, 'Sick-dir', 0.484]]
+
+==============================================================================
+C. dir-ONLY SUBSET (suffix constant: Healthy vs Sick cannot be separated by suffix)
+==============================================================================
+Patients kept: 38  (Healthy=19, Sick=19)
+all_75       repeated 5-fold x20: pooled AUC 0.954 (sd 0.016, min 0.920);  sens 0.813;  spec 0.939
+no ROI/bbox  repeated 5-fold x20: pooled AUC 0.952 (sd 0.012, min 0.925);  sens 0.774;  spec 0.934
+all patients same procedure on all 56: pooled AUC 0.974
+Compare dir-only with all-56. If dir-only stays high, the suffix is not what drives the
+result. If it drops a lot, the esq patients (all Sick) were inflating it. 38 patients is small:
+expect noisier estimates; do not over-read differences of a few hundredths.
+
+==============================================================================
+D. DO FEATURES SEPARATE dir-SICK FROM esq-SICK?
+==============================================================================
+Sick only: dir (n=19) vs esq (n=18); top features:
+                    feature  abs_AUC
+                    max_max    0.808
+                   max_mean    0.804
+                    max_min    0.734
+            bbox_height_std    0.731
+coefficient_variation_slope    0.699
+                    p90_max    0.670
+                   p90_mean    0.664
+        intensity_range_min    0.659
+Mean |AUC| over all 75 features: 0.577 (about 0.60 is typical noise at this n)
+High values mean images from the two suffixes differ systematically (framing/orientation/
+mirroring), so mixing suffixes can create a side-related shortcut.
+
+==============================================================================
+E. RAW IMAGE CHECK (display scaling vs calibrated temperature)
+==============================================================================
+Patients with readable images: 56  (3 frames each: first, middle, last by frame number)
+Class means (label 0 = Healthy, 1 = Sick):
+       roi_min  roi_max      p01      p99  n_unique_levels  frac_at_roi_max  frac_ge_250
+label                                                                                   
+0       18.807  211.667   87.048  187.088          186.684              0.0          0.0
+1       67.811  236.207  119.573  216.794          161.414              0.0          0.0
+Per-property AUC for separating the classes (0.5 = none):
+  roi_min            0.807
+  roi_max            0.861
+  p01                0.784
+  p99                0.925
+  n_unique_levels    0.645
+  frac_at_roi_max    0.579
+  frac_ge_250        0.676
+Interpretation guide: if every frame's ROI is stretched to the same min/max (roi_max ~255,
+many pixels at max, similar across patients), the images are display-scaled and absolute
+intensity is NOT temperature. If roi_max or n_unique_levels differ strongly by class, the
+classes may have been exported with different scaling/windowing, which a classifier can
+exploit without any physiological signal. This check cannot prove which case applies;
+the dataset documentation / camera export settings are the authority.

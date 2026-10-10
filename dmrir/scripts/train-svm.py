@@ -7,18 +7,16 @@ import pandas as pd
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
 from sklearn.metrics import (
     accuracy_score,
-    precision_score,
-    recall_score,
     f1_score,
     roc_auc_score,
     confusion_matrix,
 )
 
 # ============================================================
-# 1. PATHS AND SETTINGS
+# 1. PATHS
 # ============================================================
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -28,21 +26,6 @@ FOLDS_FILE = PROJECT_DIR / "dmrir" / "dmrir_patient_folds.csv"
 RESULTS_DIR = PROJECT_DIR / "dmrir" / "results"
 
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
-# IMPORTANT:
-# If labels are numeric, the script first tries to infer their
-# meaning from a label_name column.
-# If that information is unavailable, confirm the mapping
-# before setting it here.
-#
-# Example ONLY if verified:
-# NUMERIC_LABEL_MAP = {0: 0, 1: 1}
-#
-# In this map, the right-hand values mean:
-# 0 = Healthy, 1 = Sick.
-#
-# Leave as None until the mapping is confirmed.
-NUMERIC_LABEL_MAP = None
 
 
 # ============================================================
@@ -55,19 +38,6 @@ folds = pd.read_csv(FOLDS_FILE)
 features.columns = features.columns.str.strip()
 folds.columns = folds.columns.str.strip()
 
-print("FEATURE FILE:", FEATURES_FILE)
-print("FOLD FILE:", FOLDS_FILE)
-
-print("\nFeature columns:")
-print(features.columns.tolist())
-
-print("\nFold columns:")
-print(folds.columns.tolist())
-
-
-# ============================================================
-# 3. IDENTIFY COLUMNS
-# ============================================================
 
 def find_column(df, candidates, description):
     for name in candidates:
@@ -75,7 +45,7 @@ def find_column(df, candidates, description):
             return name
 
     raise ValueError(
-        f"Cannot identify {description}.\n"
+        f"Cannot identify {description}. "
         f"Available columns: {df.columns.tolist()}"
     )
 
@@ -95,13 +65,13 @@ fold_id = find_column(
 feature_label = find_column(
     features,
     ["label", "Label", "target", "Target"],
-    "label in feature file",
+    "feature label",
 )
 
 fold_label = find_column(
     folds,
     ["label", "Label", "target", "Target"],
-    "label in fold file",
+    "fold label",
 )
 
 fold_number = find_column(
@@ -112,7 +82,7 @@ fold_number = find_column(
 
 
 # ============================================================
-# 4. VALIDATE PATIENTS AND JOIN FOLDS
+# 3. VALIDATE AND MERGE
 # ============================================================
 
 if features[feature_id].duplicated().any():
@@ -122,12 +92,14 @@ if folds[fold_id].duplicated().any():
     raise ValueError("Duplicate patient IDs in fold file.")
 
 if set(features[feature_id]) != set(folds[fold_id]):
-    raise ValueError(
-        "Patient IDs differ between feature and fold files."
-    )
+    raise ValueError("Patient IDs differ between the two files.")
+
+# Use the fold file as the source of fold assignments.
+# Do not bring duplicate labels/folds into the model features.
+fold_info = folds[[fold_id, fold_label, fold_number]].copy()
 
 data = features.merge(
-    folds[[fold_id, fold_label, fold_number]],
+    fold_info,
     left_on=feature_id,
     right_on=fold_id,
     how="left",
@@ -142,123 +114,67 @@ if not np.array_equal(
     data[feature_label].astype(str).to_numpy(),
     data[fold_label].astype(str).to_numpy(),
 ):
-    raise ValueError(
-        "Labels differ between the feature and fold files."
-    )
+    raise ValueError("Labels differ between the feature and fold files.")
 
 if data[fold_number].nunique() != 5:
     raise ValueError("Expected exactly five folds.")
 
-print("\nPatient count:", len(data))
-print("Raw label counts:")
-print(data[feature_label].value_counts(dropna=False))
-
-print("\nFold distribution:")
-print(data[fold_number].value_counts().sort_index())
-
 
 # ============================================================
-# 5. ENCODE LABELS SAFELY
+# 4. ENCODE LABELS
 # ============================================================
 
-# Expected internal convention:
-# Healthy = 0
-# Sick = 1
+# Confirmed project convention:
+# 0 = Healthy
+# 1 = Sick
 
 raw_labels = data[feature_label]
-normalized = raw_labels.astype(str).str.strip().str.lower()
+normalized_labels = raw_labels.astype(str).str.strip().str.lower()
 
-text_mapping = {
-    "healthy": 0,
-    "sick": 1,
-}
-
-if normalized.isin(text_mapping).all():
-    y = normalized.map(text_mapping).astype(int)
-
+if normalized_labels.isin(["healthy", "sick"]).all():
+    y = normalized_labels.map({"healthy": 0, "sick": 1}).astype(int)
 else:
-    # Try to infer numeric label meanings from label_name.
-    label_name_col = next(
-        (
-            col for col in ["label_name", "Label_Name", "class_name"]
-            if col in features.columns
-        ),
-        None,
-    )
+    numeric_labels = pd.to_numeric(raw_labels, errors="coerce")
 
-    if label_name_col is not None:
-        label_pairs = features[
-            [feature_label, label_name_col]
-        ].drop_duplicates()
+    if numeric_labels.isna().any():
+        raise ValueError("Unexpected or missing labels.")
 
-        name_normalized = (
-            label_pairs[label_name_col]
-            .astype(str)
-            .str.strip()
-            .str.lower()
-        )
+    if set(numeric_labels.unique()) != {0, 1}:
+        raise ValueError("Expected numeric labels 0 and 1.")
 
-        label_pairs = label_pairs.copy()
-        label_pairs["_normalized_name"] = name_normalized
+    # Verify the mapping against label_name if present.
+    if "label_name" in data.columns:
+        label_check = data[["label", "label_name"]].drop_duplicates()
+        observed = {}
 
-        valid_names = {"healthy", "sick"}
+        for _, row in label_check.iterrows():
+            name = str(row["label_name"]).strip().lower()
+            value = int(row["label"])
 
-        if not set(label_pairs["_normalized_name"]).issubset(valid_names):
+            if name not in {"healthy", "sick"}:
+                raise ValueError(
+                    f"Unexpected label_name value: {row['label_name']}"
+                )
+
+            observed[value] = name
+
+        if observed != {0: "healthy", 1: "sick"}:
             raise ValueError(
-                "label_name exists, but its values are not exclusively "
-                "'Healthy' and 'Sick'. Inspect the label definitions."
+                f"Label mapping does not match expected convention: {observed}"
             )
 
-        # Each numeric label must correspond to exactly one class.
-        if label_pairs.groupby(feature_label)["_normalized_name"].nunique().max() != 1:
-            raise ValueError("A numeric label maps to multiple class names.")
-
-        mapping = {}
-
-        for _, row in label_pairs.iterrows():
-            mapping[row[feature_label]] = (
-                0 if row["_normalized_name"] == "healthy" else 1
-            )
-
-        y = raw_labels.map(mapping)
-
-        if y.isna().any():
-            raise ValueError("Some labels could not be mapped.")
-
-        y = y.astype(int)
-
-    elif NUMERIC_LABEL_MAP is not None:
-        y = raw_labels.map(NUMERIC_LABEL_MAP)
-
-        if y.isna().any():
-            raise ValueError("NUMERIC_LABEL_MAP does not cover all labels.")
-
-        y = y.astype(int)
-
-    else:
-        print("\nNumeric labels found:")
-        print(raw_labels.value_counts(dropna=False))
-
-        raise ValueError(
-            "Cannot determine whether 0 means Healthy or Sick. "
-            "Check the original dataset label mapping, then set "
-            "NUMERIC_LABEL_MAP near the top of this script. "
-            "Do not guess the mapping."
-        )
+    y = numeric_labels.astype(int)
 
 if set(y.unique()) != {0, 1}:
     raise ValueError("Both Healthy and Sick classes must be present.")
 
-print("\nEncoded classes: Healthy = 0, Sick = 1")
-print("Encoded class counts:")
-print(y.map({0: "Healthy", 1: "Sick"}).value_counts())
-
-print("\nALL COLUMNS AFTER MERGE:")
-print(data.columns.tolist())
+print("Patients:", len(data))
+print("Label counts:", y.map({0: "Healthy", 1: "Sick"}).value_counts().to_dict())
+print("Fold counts:", data[fold_number].value_counts().sort_index().to_dict())
 
 
 # ============================================================
-# 6. SELECT NUMERIC FEATURES
+# 5. SELECT FEATURES; EXCLUDE METADATA
 # ============================================================
 
 metadata_columns = {
@@ -267,18 +183,21 @@ metadata_columns = {
     feature_label,
     fold_label,
     fold_number,
+    "patient_id",
+    "patient",
+    "label",
+    "label_fold",
+    "label_x",
+    "label_y",
+    "fold",
+    "fold_fold",
+    "fold_x",
+    "fold_y",
     "label_name",
     "Label_Name",
     "class_name",
     "sequence_suffix",
-    "label_fold",
-    "fold_fold",
-    "fold_x",
-    "fold_y",
-    "label_x",
-    "label_y",
 }
-
 
 candidate_data = data.drop(
     columns=[
@@ -290,25 +209,18 @@ candidate_data = data.drop(
 
 X = candidate_data.select_dtypes(include=[np.number]).copy()
 
-# Remove columns containing no observed values.
 X = X.dropna(axis=1, how="all")
 
-if X.shape[1] == 0:
-    raise ValueError("No numeric feature columns found.")
-
-# Remove constant features.
+# Exclude constant features
 constant_columns = [
     col for col in X.columns
     if X[col].nunique(dropna=True) <= 1
 ]
+
 X = X.drop(columns=constant_columns)
 
 if X.shape[1] == 0:
-    raise ValueError("No usable feature columns remain.")
-
-print("\nPatients:", len(X))
-print("Usable numeric features:", X.shape[1])
-print("Dropped constant features:", len(constant_columns))
+    raise ValueError("No usable numeric features found.")
 
 forbidden_features = {
     "label",
@@ -327,18 +239,20 @@ leaked = forbidden_features.intersection(X.columns)
 
 if leaked:
     raise ValueError(
-        f"Metadata leakage detected in model features: {sorted(leaked)}"
+        f"Metadata leakage detected: {sorted(leaked)}"
     )
 
 print("Leakage check passed.")
+print("Numeric features:", X.shape[1])
+print("Feature names:", X.columns.tolist())
 
 
 # ============================================================
-# 7. FIVE-FOLD LOGISTIC REGRESSION
+# 6. FIVE-FOLD SVM CROSS-VALIDATION
 # ============================================================
 
-all_predictions = []
 fold_results = []
+all_predictions = []
 
 for fold in sorted(data[fold_number].unique()):
 
@@ -353,21 +267,22 @@ for fold in sorted(data[fold_number].unique()):
 
     if y_train.nunique() != 2 or y_val.nunique() != 2:
         raise ValueError(
-            f"Fold {fold}: training and validation must both "
-            "contain Healthy and Sick patients."
+            f"Fold {fold} must contain both classes in train and validation."
         )
 
     model = Pipeline([
         ("imputer", SimpleImputer(strategy="median")),
         ("scaler", StandardScaler()),
-        ("classifier", LogisticRegression(
-            max_iter=3000,
+        ("classifier", SVC(
+            kernel="linear",
+            C=1.0,
             class_weight="balanced",
+            probability=True,
             random_state=42,
         )),
     ])
 
-    # Imputation, scaling and model fitting use training data only.
+    # Fit preprocessing and model on training patients only.
     model.fit(X_train, y_train)
 
     predictions = model.predict(X_val)
@@ -414,17 +329,18 @@ for fold in sorted(data[fold_number].unique()):
         all_predictions.append({
             "patient_id": patient,
             "fold": fold,
-            "true_label": actual,
+            "true_label": int(actual),
             "true_label_name": "Sick" if actual == 1 else "Healthy",
-            "predicted_label": predicted,
+            "predicted_label": int(predicted),
             "predicted_label_name": (
                 "Sick" if predicted == 1 else "Healthy"
             ),
-            "probability_sick": probability,
+            "probability_sick": float(probability),
         })
 
     print(
-        f"\nFold {fold}: "
+        f"Fold {fold}: "
+        f"Accuracy={result['accuracy']:.3f}, "
         f"Sensitivity={sensitivity:.3f}, "
         f"Specificity={specificity:.3f}, "
         f"F1={result['F1']:.3f}, "
@@ -433,19 +349,19 @@ for fold in sorted(data[fold_number].unique()):
 
 
 # ============================================================
-# 8. SAVE RESULTS
+# 7. SAVE RESULTS
 # ============================================================
 
 metrics_df = pd.DataFrame(fold_results)
 predictions_df = pd.DataFrame(all_predictions)
 
 metrics_df.to_csv(
-    RESULTS_DIR / "fold_metrics.csv",
+    RESULTS_DIR / "svm_fold_metrics.csv",
     index=False,
 )
 
 predictions_df.to_csv(
-    RESULTS_DIR / "oof_predictions.csv",
+    RESULTS_DIR / "svm_oof_predictions.csv",
     index=False,
 )
 
@@ -465,25 +381,23 @@ summary_df = pd.DataFrame({
 })
 
 summary_df.to_csv(
-    RESULTS_DIR / "metrics_summary.csv"
+    RESULTS_DIR / "svm_metrics_summary.csv"
 )
 
 
 # ============================================================
-# 9. FINAL REPORT
+# 8. REPORT
 # ============================================================
 
 print("\n" + "=" * 60)
-print("FOLD-LEVEL RESULTS")
+print("SVM FOLD-LEVEL RESULTS")
 print("=" * 60)
 print(metrics_df.to_string(index=False))
 
 print("\n" + "=" * 60)
-print("MEAN AND STANDARD DEVIATION ACROSS FIVE FOLDS")
+print("SVM MEAN AND STANDARD DEVIATION")
 print("=" * 60)
 print(summary_df.to_string())
 
-print("\nResults saved to:")
-print(RESULTS_DIR)
-
-print("\nBaseline 1 completed.")
+print("\nResults saved to:", RESULTS_DIR)
+print("SVM baseline completed.")

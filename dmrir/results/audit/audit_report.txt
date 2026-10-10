@@ -1,0 +1,161 @@
+
+==============================================================================
+1. COLUMN AUDIT (features file)
+==============================================================================
+Rows: 56   Columns: 80
+Expected feature columns present: 75 / 75
+Numeric columns that are NOT thermal features: ['patient_id', 'label', 'fold']
+  -> If train-baseline.py picks features as 'all numeric columns minus a few',
+     confirm every column in that list is excluded. Anything like label, fold,
+     label_fold, fold_fold would be direct leakage.
+Non-numeric columns: ['label_name', 'sequence_suffix']
+Feature columns containing NaN: none
+Constant feature columns: none
+
+==============================================================================
+2. LABEL / FOLD AUDIT
+==============================================================================
+Label vs label_name in folds file:
+label_name  Healthy  Sick
+label                    
+0                19     0
+1                 0    37
+Patients in features: 56   in folds file: 56   in both: 56
+Label disagreements features vs folds file: 0
+Fold  disagreements features vs folds file: 0
+Class counts per fold (rows=fold, cols=label):
+label  0  1
+fold       
+1      4  8
+2      4  8
+3      4  7
+4      4  7
+5      3  7
+sequence_suffix (dir/esq) vs label (not used as feature, but check it is not a proxy):
+label             0   1
+sequence_suffix        
+dir              19  19
+esq               0  18
+
+Manifest check:
+  images per patient: min=20 max=20 (expected 20 for all)
+  Path components that appear in >=90% of one class's paths and in none of
+  the other class's paths (these should be the original class folder names):
+    label=0: ['SAUDAΓòá├╝VEIS']
+    label=1: ['DOENTES']
+  -> Verify by eye that label 1 really corresponds to the dataset's diseased
+     class folder and label 0 to the healthy one (do not infer from counts).
+
+==============================================================================
+3. UNIVARIATE AUC PER FEATURE (descriptive only - never select features with this)
+==============================================================================
+     feature  abs_AUC     group
+median_slope 0.968706 intensity
+   p75_slope 0.967283 intensity
+  mean_slope 0.963016 intensity
+   p25_slope 0.958748 intensity
+    mean_max 0.943101 intensity
+   p10_slope 0.937411 intensity
+  median_max 0.937411 intensity
+     p90_max 0.936700 intensity
+     p25_max 0.927454 intensity
+     p75_max 0.927454 intensity
+   p90_slope 0.918919 intensity
+    p90_mean 0.917496 intensity
+    mean_std 0.916074 intensity
+   mean_mean 0.916074 intensity
+ median_mean 0.910384 intensity
+
+Mean |AUC| by group: intensity=0.788, geometry=0.562
+Mean |AUC| by temporal summary: mean=0.762, std=0.725, min=0.719, max=0.763, slope=0.745
+
+==============================================================================
+4. OOF PREDICTION AUDIT - Logistic Regression
+==============================================================================
+Columns: ['patient_id', 'fold', 'true_label', 'true_label_name', 'predicted_label', 'predicted_label_name', 'probability_sick']   Rows: 56
+Detected -> patient:patient_id true:true_label score:probability_sick pred:predicted_label fold:fold
+Rows per patient: min=1 max=1 (expect 1)
+Patients missing from OOF: []
+Label mismatches vs folds file: 0
+Fold mismatches vs folds file: 0
+Pooled OOF metrics (one confusion matrix over all patients - NOT the fold mean):
+  accuracy=0.893, sensitivity=0.865, specificity=0.947, PPV=0.970, NPV=0.783, AUC=0.983, TN=18, FP=1, FN=5, TP=32
+Per fold (recomputed from OOF):
+ fold  accuracy  sensitivity  specificity   PPV   NPV   AUC  TN  FP  FN  TP
+    1     0.833        0.750         1.00 1.000 0.667 1.000   4   0   2   6
+    2     0.833        0.875         0.75 0.875 0.750 0.969   3   1   1   7
+    3     0.909        0.857         1.00 1.000 0.800 1.000   4   0   1   6
+    4     0.909        0.857         1.00 1.000 0.800 1.000   4   0   1   6
+    5     1.000        1.000         1.00 1.000 1.000 1.000   3   0   0   7
+Misclassified patients at stored threshold: [179, 255, 108, 180, 249, 213]
+
+==============================================================================
+4. OOF PREDICTION AUDIT - Linear SVM
+==============================================================================
+Columns: ['patient_id', 'fold', 'true_label', 'true_label_name', 'predicted_label', 'predicted_label_name', 'probability_sick']   Rows: 56
+Detected -> patient:patient_id true:true_label score:probability_sick pred:predicted_label fold:fold
+Rows per patient: min=1 max=1 (expect 1)
+Patients missing from OOF: []
+Label mismatches vs folds file: 0
+Fold mismatches vs folds file: 0
+Note: stored prediction differs from score>=0.5 for 1 patients (fine for SVM predict() vs Platt-scaled probability; AUC uses the score column)
+Pooled OOF metrics (one confusion matrix over all patients - NOT the fold mean):
+  accuracy=0.893, sensitivity=0.865, specificity=0.947, PPV=0.970, NPV=0.783, AUC=0.969, TN=18, FP=1, FN=5, TP=32
+Per fold (recomputed from OOF):
+ fold  accuracy  sensitivity  specificity   PPV   NPV   AUC  TN  FP  FN  TP
+    1     0.833        0.750         1.00 1.000 0.667 0.938   4   0   2   6
+    2     0.833        0.875         0.75 0.875 0.750 0.938   3   1   1   7
+    3     0.909        0.857         1.00 1.000 0.800 0.964   4   0   1   6
+    4     0.909        0.857         1.00 1.000 0.800 1.000   4   0   1   6
+    5     1.000        1.000         1.00 1.000 1.000 1.000   3   0   0   7
+Misclassified patients at stored threshold: [179, 255, 108, 180, 249, 213]
+
+==============================================================================
+4b. LOGISTIC REGRESSION vs SVM OOF AGREEMENT
+==============================================================================
+Patients compared: 56
+Predicted-label disagreements: 0
+AUC  LR=0.9829   SVM=0.9687
+Identical mean accuracy/sensitivity/specificity for both models is plausible only if
+their predicted labels are (nearly) identical - the disagreement count above shows that.
+It also means the two baselines are not independent evidence.
+
+==============================================================================
+5. FEATURE-GROUP ABLATION (same fixed folds, logistic regression)
+==============================================================================
+                                feature_set  n_features  pooled_AUC  fold_mean_AUC  sensitivity  specificity  accuracy
+                                     all_75          75       0.983          0.994        0.865        0.947     0.893
+               intensity_only (no ROI/bbox)          60       0.983          0.994        0.865        0.947     0.893
+                  geometry_only (ROI%/bbox)          15       0.606          0.602        0.676        0.526     0.625
+intensity_mean_aggregate_only (no dynamics)          12       0.935          0.950        0.946        0.895     0.929
+    intensity_dynamics_only (_std + _slope)          24       0.959          0.974        0.865        0.895     0.875
+
+How to read this: if geometry_only is already high, ROI size/shape is a shortcut.
+If intensity_only stays high and dynamics_only is near the mean-aggregate result, the
+signal is mostly static intensity (which may depend on image scaling).
+
+==============================================================================
+6. LABEL-PERMUTATION TEST (200 permutations, labels shuffled within each fold)
+==============================================================================
+Observed pooled OOF AUC (all 75 features): 0.983
+Null AUC: mean=0.499  95th pct=0.665  max=0.698
+Permutation p-value: 0.0050
+Null mean should be close to 0.5. A null mean well above 0.5 indicates a pipeline leak
+or a quirk of the fold structure (a small positive offset is normal with 56 patients).
+
+==============================================================================
+7. PATIENT-LEVEL BOOTSTRAP (2000 resamples of pooled OOF predictions)
+==============================================================================
+AUC: 95% bootstrap interval [0.945, 1.000]
+sensitivity: 95% bootstrap interval [0.750, 0.970]
+specificity: 95% bootstrap interval [0.824, 1.000]
+Percentile bootstrap with ~19 healthy / 37 sick patients is approximate and tends to be
+optimistic near 1.0; treat as a rough indication of uncertainty, not exact coverage.
+
+==============================================================================
+8. REPEATED STRATIFIED 5-FOLD (10 different partitions; diagnostic only)
+==============================================================================
+all_75: pooled AUC mean=0.973 sd=0.006 min=0.963;  balanced accuracy mean=0.912 sd=0.012
+intensity_only: pooled AUC mean=0.971 sd=0.008 min=0.959;  balanced accuracy mean=0.914 sd=0.016
+This does NOT replace the fixed folds used for model comparison; it only shows how much
+the numbers depend on which patients happened to share a fold.
